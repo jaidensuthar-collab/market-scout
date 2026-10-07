@@ -1,0 +1,432 @@
+{
+  "name": "Market Scout \u2014 Facebook Marketplace (hourly)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "1. Schedule \u2014 Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "helperUrl",
+              "value": "http://127.0.0.1:8478",
+              "type": "string"
+            },
+            {
+              "id": "s2",
+              "name": "listingLimit",
+              "value": 25,
+              "type": "number"
+            },
+            {
+              "id": "s3",
+              "name": "removedCheckMax",
+              "value": 15,
+              "type": "number"
+            },
+            {
+              "id": "s4",
+              "name": "syncSheets",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "s5",
+              "name": "runStartedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "2. Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.helperUrl }}/health",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "3. Helper Health Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -480,
+        300
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              },
+              "leftValue": "={{ $json.browser }}",
+              "rightValue": "UNREACHABLE"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "4. Browser Reachable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('2. Configuration').item.json.helperUrl }}/run",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ limit: $('2. Configuration').item.json.listingLimit }) }}",
+        "options": {
+          "timeout": 1800000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "5. Run Marketplace Sweep",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -40,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('2. Configuration').item.json.helperUrl }}/check-removed",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ max: $('2. Configuration').item.json.removedCheckMax }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "6. Detect Sold / Removed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        200,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('2. Configuration').item.json.helperUrl }}/sheets/sync",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "7. Rebuild Google Sheets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compact run summary for the log and any future notifier.\nconst sweep = $('5. Run Marketplace Sweep').first().json || {};\nconst stats = sweep.stats || {};\nconst records = sweep.records || [];\nlet removed = {}; try { removed = $('6. Detect Sold / Removed').first().json || {}; } catch (e) {}\nlet sheets = {};  try { sheets  = $('7. Rebuild Google Sheets').first().json || {}; } catch (e) {}\nconst notable = records.filter(r => r.matchType === 'Match')\n  .sort((a, b) => (a.distanceUsed ?? 999) - (b.distanceUsed ?? 999))\n  .slice(0, 10)\n  .map(r => ({ title: r.title, year: r.year, price: r.price, distance: r.distanceUsed, city: r.city, url: r.url, why: (r.reasons || []).join('; ') }));\nreturn [{ json: {\n  profile: sheets.profile, runStartedAt: $('2. Configuration').first().json.runStartedAt, runFinishedAt: new Date().toISOString(),\n  searchSort: stats.searchSort, scanned: stats.scanned || 0, opened: stats.opened || 0, rejected: stats.rejected || 0,\n  matches: stats.matches || 0, needsReview: stats.needsReview || 0, newListings: stats.newListings || 0,\n  updatedListings: stats.updated || 0, priceChanges: stats.priceChanges || 0, removedOrSold: removed.removed || 0,\n  errors: stats.errors || [], errorCount: (stats.errors || []).length, sheetsCounts: sheets.counts || null,\n  testMode: sheets.testMode, notable, hasNotable: notable.length > 0 } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "8. Build Run Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "n1",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.hasNotable }}"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "9. Anything Notable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-00000000000a",
+      "name": "10. NOTIFICATION GATE \u2014 DISABLED",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        120
+      ],
+      "notes": "Notifications are intentionally OFF.\n\nTo enable later, connect this output to a Discord / Telegram / Gmail / Twilio node. The incoming JSON already contains `notable[]` with model, year, price, mileage, distance, score, label, scamRisk, url, pros and cons \u2014 everything a message needs. Nothing upstream has to change.\n\nAlso set ENABLE_NOTIFICATIONS=true in the helper's .env if you want /notify to do real work.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-00000000000b",
+      "name": "11. Quiet Run \u2014 No Action",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Centralised failure logging. Any branch that errors lands here so one\n// broken stage never silently kills the run.\nconst items = $input.all();\nconst failures = items.map(i => ({\n  when: new Date().toISOString(),\n  node: i.json?.node || 'unknown',\n  message: i.json?.error?.message || i.json?.message || JSON.stringify(i.json).slice(0, 400)\n}));\nconsole.error('[moto-scout] run failure:', JSON.stringify(failures, null, 2));\nreturn [{ json: { ok: false, failures, hint: 'Run `node src/selfcheck.js` in ~/Projects/moto-scout to find the broken piece.' } }];"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000c",
+      "name": "E. Log Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Helper unreachable or browser not connected. Check: (1) `npm start` is running in ~/Projects/moto-scout, (2) Opera was launched from ~/Applications/Opera.app so CDP port 9222 is open. Detail: {{ JSON.stringify($json).slice(0,300) }}"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000d",
+      "name": "E. Stop \u2014 Browser Unavailable",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "1. Schedule \u2014 Every Hour": {
+      "main": [
+        [
+          {
+            "node": "2. Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Configuration": {
+      "main": [
+        [
+          {
+            "node": "3. Helper Health Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Helper Health Check": {
+      "main": [
+        [
+          {
+            "node": "4. Browser Reachable?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E. Stop \u2014 Browser Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Browser Reachable?": {
+      "main": [
+        [
+          {
+            "node": "5. Run Marketplace Sweep",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E. Stop \u2014 Browser Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Run Marketplace Sweep": {
+      "main": [
+        [
+          {
+            "node": "6. Detect Sold / Removed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E. Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Detect Sold / Removed": {
+      "main": [
+        [
+          {
+            "node": "7. Rebuild Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Rebuild Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "8. Build Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E. Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Build Run Summary": {
+      "main": [
+        [
+          {
+            "node": "9. Anything Notable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Anything Notable?": {
+      "main": [
+        [
+          {
+            "node": "10. NOTIFICATION GATE \u2014 DISABLED",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11. Quiet Run \u2014 No Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "meta": {
+    "instanceId": "moto-scout-local"
+  },
+  "tags": []
+}
